@@ -1,0 +1,177 @@
+#include <sys/socket.h>
+#include <net/if.h>
+#include <net/route.h>
+#include <net/if_dl.h>
+#include <libc.h>
+#include <QString>
+
+
+/**
+ * Convert a RTM constant to a human readable string.
+ * @param type
+ * @return
+ */
+QString nameOfRtaType(const int type) {
+    switch (type) {
+    case 1:
+        return QString("Destination");
+        break;
+    case 2:
+        return QString("Gateway");
+        break;
+    case 4:
+        return QString("Netmask");
+        break;
+    case 8:
+        return QString("Genmask");
+        break;
+    case 16:
+        return QString("Interface Name");
+        break;
+    case 32:
+        return QString("Interface Addr.");
+        break;
+    case 64:
+        return QString("Athor");
+        break;
+    }
+    return QString();
+}
+
+/**
+ * Convert the bit mask to string a string value.
+ * @param addr
+ * @return
+ */
+QString stringValuesOfAddr(const int addr) {
+    QString addresses;
+    for (int i=1; i<256; i*=2) {
+        if (addr & i) {
+            addresses.append(nameOfRtaType(i));
+            addresses.append(' ');
+        }
+    }
+
+    return addresses.remove(addresses.length()-1, 1);
+}
+
+/**
+ * Get the MAC address as a string.
+ * @param addr
+ * @return
+ */
+QString macAddress(sockaddr_dl *addr) {
+    QString address;
+    for (int i=0; i<addr->sdl_alen; ++i) {
+        unsigned char byte = addr->sdl_data[i];
+        address.append(QString().setNum((int)(byte / 16)));
+        int rest = byte % 16;
+        if (rest <= 9) {
+            address.append(QString().setNum(rest));
+        } else {
+            address.append((char)(rest - 10 + 'a'));
+        }
+        address.append(':');
+    }
+    address.remove(address.length()-1, 1);
+
+    return address;
+}
+
+// Struct which builds the message.
+struct route_msg {
+    rt_msghdr header;
+    sockaddr_in destAddress;
+};
+
+
+
+
+int main(int argc, char *argv[]) {
+
+    char *queryIp = "141.82.165.178";
+    if (argc > 1) {
+        queryIp = argv[1];
+    }
+
+    // Open socket
+    int sock = socket(PF_ROUTE, SOCK_RAW, AF_UNSPEC);
+    if (sock < 0) {
+        puts("Could not open socket !");
+        return -1;
+    }
+
+    // Create the message.
+    route_msg message;
+    memset(&message, 0, sizeof(message));
+    message.header.rtm_addrs = RTA_DST;
+    message.header.rtm_type = RTM_GET;
+    message.header.rtm_msglen = sizeof(message);
+    message.header.rtm_pid = getpid();
+    message.header.rtm_seq = 1234;
+    message.header.rtm_version = RTM_VERSION;
+    // Set the destanation address to which we want the routing information.
+    message.destAddress.sin_family = PF_INET;
+    message.destAddress.sin_addr.s_addr = inet_addr(queryIp);
+    message.destAddress.sin_len = sizeof(sockaddr_in);
+
+    // Send message to kernel.
+    ssize_t msgSize = write(sock, &message, message.header.rtm_msglen);
+    if (msgSize < 0) {
+        printf("Could not write message to kernel !\n");
+        return -1;
+    }
+
+    // Read the kernels answer.
+    size_t bufferLength = 512;
+    char buffer[512];
+    struct route_msg *msg = (struct route_msg*)buffer;
+    ssize_t rspSize = read(sock, buffer, bufferLength);
+    printf("\nResponse size : %i\n", rspSize);
+    printf("Payload : %i\n", rspSize - sizeof(rt_msghdr));
+    printf("Content : %s\n", stringValuesOfAddr(msg->header.rtm_addrs).toUtf8().data());
+    printf("------------------------------------------------------\n");
+
+    // The payload starts directly after the message header.
+    sockaddr_in *response = &msg->destAddress;
+    int responseMask = RTA_DST;
+    while (responseMask <= 128) {
+        if (msg->header.rtm_addrs & responseMask) {
+            char *descr = nameOfRtaType(responseMask).toUtf8().data();
+            switch (response->sin_family) {
+            case AF_INET:
+                printf("%s : %s\n", descr, inet_ntoa(response->sin_addr));
+                break;
+            case AF_INET6: {
+                sockaddr_in6 *sa = (sockaddr_in6*)response;
+                char ip[INET6_ADDRSTRLEN];
+                memset(ip, 0, INET6_ADDRSTRLEN);
+                inet_ntop(AF_INET6, &sa->sin6_addr, ip, INET6_ADDRSTRLEN);
+                printf("%s : %s\tlen %i\n", descr, ip,response->sin_len);
+                break;
+            }
+            case AF_LINK: {
+                sockaddr_dl *mac = (sockaddr_dl*)response;
+                printf("%s : Link#%i %s\n", descr, mac->sdl_index, macAddress(mac).toUtf8().data());
+                break;
+            }
+            default:
+                printf("%s : %s\n", descr, inet_ntoa(response->sin_addr));
+                break;
+            }
+            // Get next address entry.
+            if (response->sin_len == 0) {
+                response = (sockaddr_in*)((char*)response + sizeof(unsigned long));
+            } else {
+                response = (sockaddr_in*)((char*)response + response->sin_len);
+            }
+        }
+        responseMask *= 2;  // Next bit in the mask.
+    }
+    printf("\n");
+
+    // Close socket
+    close(sock);
+
+    return 0;
+}
