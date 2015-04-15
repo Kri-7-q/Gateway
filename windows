@@ -1,0 +1,35 @@
+#include <windows.h>
+#include <IpHlpApi.h>
+#include <stdio.h>
+#include <stdlib.h>
+#pragma comment(lib, "Iphlpapi.lib")
+
+int main(void)
+{
+    ULONG            cbBuf    = 0;
+    PIP_ADAPTER_INFO pAdapter = NULL;
+    PIP_ADAPTER_INFO pMemory  = NULL;
+    DWORD            dwResult = 0;
+
+    dwResult = GetAdaptersInfo(NULL, &cbBuf);
+
+    pMemory = pAdapter = (PIP_ADAPTER_INFO) malloc(cbBuf);
+
+    dwResult = GetAdaptersInfo(pAdapter, &cbBuf);
+
+    while (pAdapter)
+    {
+        printf("Name: %s\nDescription: %s\nGateway: %s\nSubnet Mask: %s\n",
+               pAdapter->AdapterName,
+               pAdapter->Description,
+               pAdapter->GatewayList.IpAddress.String,
+               pAdapter->IpAddressList.IpMask.String);
+
+        pAdapter = pAdapter->Next;
+    }
+
+    free(pMemory);
+
+    getchar();
+    return 0;
+}
