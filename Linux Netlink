@@ -1,0 +1,113 @@
+#include <netinet/in.h>
+#include <net/if.h>
+#include <stdio.h>
+#include <string.h>
+#include <stdlib.h>
+#include <unistd.h>
+#include <sys/socket.h>
+#include <linux/netlink.h>
+#include <linux/rtnetlink.h>
+#include <sys/types.h>
+#include <sys/socket.h>
+#include <arpa/inet.h>
+
+
+
+
+struct route_info {
+    struct in_addr dstAddr;
+    struct in_addr srcAddr;
+    struct in_addr gateWay;
+    char ifName[IF_NAMESIZE];
+};
+
+
+void printRouteInfo(route_info* info);
+
+
+
+// ---------------------------------------------------------------------------------------
+// MAIN - Function
+// ---------------------------------------------------------------------------------------
+int main()
+{
+    int sock, len, msgSeq = 0;
+
+    // Create socket
+    if ((sock = socket(PF_NETLINK, SOCK_DGRAM, NETLINK_ROUTE)) < 0)
+        perror("Socket Creation: ");
+
+    // Message buffer
+    int bufferLen = 2048;
+    char msgBuf[bufferLen];
+    struct nlmsghdr *nlMsgHeader;
+    struct rtmsg *rtMessage;
+    memset(msgBuf, 0, bufferLen);
+    nlMsgHeader = (struct nlmsghdr *) msgBuf;
+    rtMessage = (struct rtmsg *) NLMSG_DATA(nlMsgHeader);
+
+    // Fill nlmsg header
+    nlMsgHeader->nlmsg_len = NLMSG_LENGTH(sizeof(struct rtmsg));
+    nlMsgHeader->nlmsg_type = RTM_GETROUTE;
+
+    nlMsgHeader->nlmsg_flags = NLM_F_DUMP | NLM_F_REQUEST;
+    nlMsgHeader->nlmsg_seq = msgSeq++;
+    nlMsgHeader->nlmsg_pid = getpid();
+
+    // Send the request
+    if (send(sock, nlMsgHeader, nlMsgHeader->nlmsg_len, 0) < 0) {
+        printf("Write To Socket Failed...\n");
+        return -1;
+    }
+
+    // -----------------------------------------------------------
+    // Receive answer
+    if ((len = recv(sock, nlMsgHeader, bufferLen, 0)) < 0) {
+        printf("Read From Socket Failed...\n");
+        return -1;
+    }
+
+    // Read answer
+    if (! NLMSG_OK(nlMsgHeader, bufferLen)) {
+        perror("Corrupt message header !");
+        return -1;
+    }
+    rtMessage = (struct rtmsg*)NLMSG_DATA(nlMsgHeader);
+    struct rtattr* attr = RTM_RTA(rtMessage);
+    int rtSize = RTM_PAYLOAD(nlMsgHeader);
+    struct route_info rtInfo;
+    for (; RTA_OK(attr, rtSize); attr = RTA_NEXT(attr, rtSize)) {
+        switch (attr->rta_type) {
+        case RTA_OIF:
+            if_indextoname(*(int *) RTA_DATA(attr), rtInfo.ifName);
+            break;
+        case RTA_GATEWAY:
+            rtInfo.gateWay.s_addr= *(u_int *) RTA_DATA(attr);
+            break;
+        case RTA_PREFSRC:
+            rtInfo.srcAddr.s_addr= *(u_int *) RTA_DATA(attr);
+            break;
+        case RTA_DST:
+            rtInfo.dstAddr .s_addr= *(u_int *) RTA_DATA(attr);
+            break;
+        }
+    }
+    printRouteInfo(&rtInfo);
+
+    // Free and close
+    close(sock);
+
+    return 0;
+}
+
+
+// Print result
+void printRouteInfo(route_info *info) {
+    printf("-----------------------------------------------\n");
+    printf("Route :\n");
+    printf("Interface name : %s\n", info->ifName);
+    printf("Gateway        : %s\n", inet_ntoa(info->gateWay) );
+    printf("Source Address : %s\n", inet_ntoa(info->srcAddr) );
+    printf("Dest. Address  : %s\n", inet_ntoa(info->dstAddr) );
+    printf("-----------------------------------------------\n");
+}
